@@ -43,8 +43,17 @@ Rebuilt July 2026 from `STUFF_PLUS.md` documentation against the public
   `traditional_stats.json` (lives in the Dash-Minor-Leagues repo, rebuilt daily).
 - **College** (`scripts/06c_score_college_v2.py`): NCAA ball is out-of-domain for
   the MiLB-ball coefficients, so assumed per-pitch-type SpinEff (near-lossless;
-  the spin term is tiny) and conservative dampen 0.25; altitude off. Barrand
-  pitch-type extension corrections are baked into the college data upstream.
+  the spin term is tiny) and conservative dampen 0.25; altitude off. The
+  measured extension correction (`scripts/09_college_ext_correction.py`,
+  per-type intercept + shared slope fit on 72 college->MiLB matched pairs) is
+  baked into the college data upstream; RelHt stays raw. Two out-of-domain
+  guards protect every grade: FB differentials are clipped to the MLB p2-p98
+  supported range (`data/feature_bounds.json`, derived by
+  `scripts/08_feature_bounds.py`), and each pitch grade is Monte Carlo smoothed
+  over input measurement noise (K=64, seeded) so LightGBM tree cliffs cannot
+  swing a grade on half a mph. Scout arm-angle overrides (`AA_OVERRIDES` in the
+  scorer and in the dashboard's computeArmAngle) supersede the imputer for
+  eye-verified arms; current: Mendes 40, Renfrow 50.
 - Aggregation: per-pitch grade (min 10), usage-weighted overall (min 30),
   vs-R / vs-L splits. Output: `{ovr, n, by:{pitch:{s,n,R,L}}, ovrR, ovrL}`.
 
@@ -75,6 +84,11 @@ the same training run as the model files — anchors and models travel together.
 | `grades/stuffplus_original_backup.json` | Pre-rebuild board (revert path) |
 | `legacy/` | v1 4-cell models + anchors (proxy arm angle) |
 | `data/mlbam_height.json` | MLBAM id → height (inches), Chadwick-derived |
+| `data/feature_bounds.json` | MLB p2-p98 differential ranges (scoring clip) |
+| `data/ext_correction_v2.json` | Measured college extension correction spec |
+| `scripts/07_refit_arm_imputer.py` | Rebuild the arm-angle imputer from optical CSVs |
+| `scripts/08_feature_bounds.py` | Rebuild the scoring clip bounds from raw MLB data |
+| `scripts/09_college_ext_correction.py` | Extension correction spec + apply function |
 | `data/20{24,25,26} arm angle.csv` | Savant optical arm-angle exports (training inputs) |
 | `VALIDATION.md` | Out-of-sample tests & version comparison |
 

@@ -58,3 +58,30 @@ predictive band as the original's documented −0.21; results-based metrics
 remain the better pure one-year forecaster for established arms (+0.19 here),
 which matches the original documentation — Stuff+'s edge is stability and the
 small-sample regime where prospects live.
+
+
+---
+
+## Post-release updates (July 2026)
+
+**College extension correction, measured on own data** (`data/ext_correction_v2.json`,
+applied by `scripts/09_college_ext_correction.py`): 18 arms from the 2025 college
+class matched to their 2026 MiLB tracking (72 pitcher x pitch-type pairs) replicate
+Barrand's direction at ~2/3 magnitude, and the gap scales with extension
+(-0.25 ft per ft). Deployed form: per-pitch-type intercept + shared slope
+(residual RMSE 0.263 vs 0.309 for a flat offset), clamped to [0, 1.2] ft.
+
+**Arm angle** (`scripts/07_refit_arm_imputer.py`): CV on 1,447 pitcher-seasons shows
+height-segmented "mini models" test WORSE than the global linear fit (5.94 vs 5.88
+RMSE) and LightGBM worse still (7.32) - the geometry->angle relationship is linear
+and at its information ceiling (~5.9 deg). Residuals show no height bias; mild
+compression at the extremes. Policy: the regression is the default; eye-verified
+scout overrides (AA_OVERRIDES in the dashboard and college scorer) supersede it
+for specific arms.
+
+**Scoring robustness** (`scripts/08_feature_bounds.py`, college scorer): fastball
+differentials are clipped to the MLB-supported p2-p98 range, and every grade is
+Monte-Carlo smoothed over input measurement noise (K=64, fixed seed). Motivating
+case: a curveball graded 113 on a 12-point tree-split cliff between -17.0 and
+-17.5 mph of velocity separation; smoothed it grades 107. Mean effect across the
+college board: 1.2 pts.

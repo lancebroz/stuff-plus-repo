@@ -20,10 +20,17 @@ Output: college_stuff.json  -> {pitcher: {ovr,n,by:{pt:{s,n,R,L}},ovrR,ovrL}}
 """
 import os, json, sys
 import numpy as np, pandas as pd, lightgbm as lgb
-sys.path.insert(0, "/home/claude")
+_HERE=os.path.dirname(os.path.abspath(__file__))
+_REPO=os.path.dirname(_HERE)
+sys.path.insert(0, _HERE)          # milb_shape_adjustments.py lives in scripts/
+sys.path.insert(0, "/home/claude") # session-environment fallback
+def _resolve(*cands):
+    for c in cands:
+        if c and os.path.exists(c): return c
+    return cands[-1]
 from milb_shape_adjustments import ball_adjust, TYPE_MAP
 
-ART = "/home/claude/stuff/artifacts"
+ART = _resolve(os.path.join(_REPO,"models"), "/home/claude/stuff/artifacts")
 MODELED = ["FF","SI","SL","CH","ST","FC","CU","FS","KC","SV"]
 FB_TYPES = ["FF","SI","FC"]
 FEATURES = ["start_speed","ivb","hb","rel_side","release_z","extension","spin_rate",
@@ -36,6 +43,18 @@ PT_COLLEGE = {"Fastball":"FF","Sinker":"SI","Slider":"SL","Sweeper":"ST","Cutter
 ASSUMED_SE = {"Fastball":92.0,"Sinker":88.0,"Slider":35.0,"Sweeper":40.0,
               "Cutter":55.0,"Curveball":70.0,"Changeup":88.0,"Splitter":50.0}
 DAMPEN = 0.25
+AA_OVERRIDES={"Mendes, Wes":40.0,"Renfrow, Brett":50.0}
+# Out-of-domain guards: clip FB differentials to the MLB-supported range (p2-p98),
+# then Monte-Carlo smooth each grade over input measurement uncertainty so tree
+# cliffs cannot swing a grade on half a mph.
+_fb_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","data","feature_bounds.json")
+if not os.path.exists(_fb_path): _fb_path="/home/claude/feature_bounds.json"
+FEATURE_BOUNDS=json.load(open(_fb_path))
+MC_SIG={"start_speed":0.4,"ivb":0.8,"hb":0.8,"rel_side":0.06,"release_z":0.06,
+        "extension":0.10,"spin_rate":30.0,"velo_diff":0.5,"ivb_diff":1.0,
+        "hb_diff":1.0,"arm_angle":1.5}
+MC_K=64
+_RNG=np.random.default_rng(42)
 
 def decode_height(code):
     if code is None: return None
@@ -46,7 +65,8 @@ def impute_arm_angle(rel_z, height_ft, rel_side, ext):
     return float(np.clip(a, -90, 90))
 
 def main():
-    col = json.load(open("/home/claude/college_data.json"))
+    col = json.load(open(_resolve(os.path.join(_REPO,"data","college_data.json"),
+                                   "college_data.json","/home/claude/college_data.json")))
     H = col["cph"]; ix = {h:i for i,h in enumerate(H)}
     code_map = json.load(open(f"{ART}/pitch_type_map.json"))
     anchors = json.load(open(f"{ART}/anchors_v2.json"))
@@ -109,16 +129,24 @@ def main():
             # arm-side-positive frame: mirror LHP
             hb_f = -hb if hand=="L" else hb
             rels_f = -rel_side if hand=="L" else rel_side
-            arm = impute_arm_angle(rel_z, height_ft if height_ft else rel_z+1.6, rels_f, ext)
+            arm = AA_OVERRIDES.get(name, impute_arm_angle(rel_z, height_ft if height_ft else rel_z+1.6, rels_f, ext))
             vdiff = velo - pv if pv else 0.0
             ivbdiff = ivb - pivb if pivb is not None else 0.0
             hbdiff = (hb_f - (-phb if hand=="L" else phb)) if phb is not None else 0.0
+            # clip differentials into MLB-supported territory
+            fb_bounds=FEATURE_BOUNDS.get(code,{})
+            def _clip(v,key):
+                b=fb_bounds.get(key)
+                return min(max(v,b[0]),b[1]) if b else v
+            vdiff=_clip(vdiff,"velo_diff"); ivbdiff=_clip(ivbdiff,"ivb_diff"); hbdiff=_clip(hbdiff,"hb_diff")
             grades = {}
             for bh in ["R","L"]:
                 same = 1 if bh==hand else 0
-                feat = pd.DataFrame([[velo,ivb,hb_f,rels_f,rel_z,ext,spin,
-                                      vdiff,ivbdiff,hbdiff,arm,code_map[code],same]], columns=FEATURES)
-                pred = float(models[hand].predict(feat)[0])
+                base=[velo,ivb,hb_f,rels_f,rel_z,ext,spin,vdiff,ivbdiff,hbdiff,arm,code_map[code],same]
+                feat = pd.DataFrame([base]*MC_K, columns=FEATURES)
+                for col_,s_ in MC_SIG.items():
+                    feat[col_]=feat[col_]+_RNG.normal(0,s_,MC_K)
+                pred = float(np.mean(models[hand].predict(feat)))
                 a = anchors.get(f"{hand}_{bh}",{}).get(code)
                 if not a or a["sigma"]==0: grades[bh]=None; continue
                 grades[bh] = 100 + 10*((-pred) - a["mu"])/a["sigma"]
@@ -143,7 +171,10 @@ def main():
         ovr = wavg("s") if tot>=30 else None
         out[name] = {"ovr": ovr, "n": tot, "by": by,
                      "ovrR": wavg("R"), "ovrL": wavg("L"), "hand": hand}
-    json.dump(out, open("/home/claude/college_stuff_v2.json","w"))
+    _outdir=os.path.join(_REPO,"grades")
+    _out=os.path.join(_outdir,"college_stuff_v2.json") if os.path.isdir(_outdir) else "/home/claude/college_stuff_v2.json"
+    json.dump(out, open(_out,"w"))
+    print(f"[06] wrote {_out}")
     graded = [v["ovr"] for v in out.values() if v["ovr"] is not None]
     print(f"[06] scored {len(out)} college arms; {len(graded)} with overall grade")
     print(f"     overall Stuff+ range {min(graded)}-{max(graded)}, mean {np.mean(graded):.1f}")
